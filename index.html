@@ -207,12 +207,7 @@
     }
 
     // --- ISS data fetch ---
-    // CORS note: the Open Notify API is HTTP-only. This works when the page is
-    // opened from disk (file://) or served over plain HTTP. If served over HTTPS,
-    // the browser will block the mixed-content request. In that case, prefix the
-    // URL with a CORS proxy, e.g.:
-    //   'https://corsproxy.io/?' + ISS_API_URL
-    const ISS_API_URL = 'http://api.open-notify.org/iss-now.json';
+    const ISS_API_URL = 'https://api.wheretheiss.at/v1/satellites/25544';
 
     async function fetchISS() {
       setStatus('fetching');
@@ -221,8 +216,8 @@
         throw new Error(`HTTP ${response.status}`);
       }
       const data = await response.json();
-      const lat  = parseFloat(data.iss_position.latitude);
-      const lon  = parseFloat(data.iss_position.longitude);
+      const lat  = parseFloat(data.latitude);
+      const lon  = parseFloat(data.longitude);
       const ts   = data.timestamp;
       setStatus('live');
       return { lat, lon, ts };
