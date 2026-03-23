@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ISS Tracker</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #0a0e1a;
+      color: #e0e6f0;
+      font-family: 'Courier New', monospace;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #map {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #info-panel {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      background: rgba(10, 14, 26, 0.82);
+      border: 1px solid #2a3a5a;
+      border-radius: 8px;
+      padding: 14px 18px;
+      min-width: 200px;
+      backdrop-filter: blur(4px);
+    }
+
+    #status-badge {
+      font-size: 0.7rem;
+      font-weight: bold;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      display: inline-block;
+      margin-bottom: 12px;
+      background: #2a3a5a;
+      color: #8aa0c8;
+    }
+
+    #status-badge.live {
+      background: #0d3320;
+      color: #3ddc84;
+    }
+
+    #status-badge.error {
+      background: #3a0d0d;
+      color: #ff6b6b;
+    }
+
+    .coord-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      font-size: 0.85rem;
+      margin-bottom: 6px;
+    }
+
+    .coord-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .label {
+      color: #5a7aa8;
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      align-self: center;
+    }
+
+    @keyframes pulse {
+      0%   { opacity: 1;   transform: scale(1); }
+      50%  { opacity: 0.4; transform: scale(1.6); }
+      100% { opacity: 1;   transform: scale(1); }
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="map"></canvas>
+
+  <div id="info-panel">
+    <div id="status-badge">Fetching&hellip;</div>
+    <div class="coord-row">
+      <span class="label">LAT</span>
+      <span id="lat">—</span>
+    </div>
+    <div class="coord-row">
+      <span class="label">LON</span>
+      <span id="lon">—</span>
+    </div>
+    <div class="coord-row">
+      <span class="label">UTC</span>
+      <span id="utc">—</span>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('map');
+    const ctx    = canvas.getContext('2d');
+
+    // Public-domain equirectangular world map (NASA Blue Marble, 2048 px wide).
+    // This image is in the public domain as a work of the US federal government.
+    const MAP_URL = 'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_2048.jpg';
+
+    const mapImage = new Image();
+    mapImage.src = MAP_URL;
+
+    // mapReady resolves once the image has fully loaded.
+    // All canvas drawing must wait on this promise.
+    const mapReady = new Promise((resolve, reject) => {
+      mapImage.onload  = () => resolve();
+      mapImage.onerror = () => reject(new Error('Failed to load map image'));
+    });
+
+    // --- Coordinate conversion ---
+    // Equirectangular projection: lat/lon → canvas pixel
+    function project(lat, lon) {
+      const x = (lon + 180) / 360 * canvas.width;
+      const y = (90 - lat)  / 180 * canvas.height;
+      return { x, y };
+    }
+
+    // --- Pulse animation state ---
+    // We drive the pulse ring with requestAnimationFrame so it animates
+    // continuously between data fetches.
+    let pulsePhase = 0; // 0..1, driven by rAF
+
+    // --- Main draw function ---
+    // positions: array of { lat, lon } objects, oldest first.
+    // The last entry is the current ISS position.
+    function drawMap(positions) {
+      const W = canvas.width;
+      const H = canvas.height;
+
+      // 1. Background map
+      ctx.clearRect(0, 0, W, H);
+      ctx.drawImage(mapImage, 0, 0, W, H);
+
+      if (positions.length === 0) return;
+
+      // 2. Ground track trail (oldest → newest, fading in opacity)
+      for (let i = 0; i < positions.length - 1; i++) {
+        const alpha = 0.15 + 0.55 * (i / (positions.length - 1));
+        const { x, y } = project(positions[i].lat, positions[i].lon);
+        ctx.beginPath();
+        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 160, 60, ${alpha})`;
+        ctx.fill();
+      }
+
+      // 3. Current position — solid dot
+      const current = positions[positions.length - 1];
+      const { x, y } = project(current.lat, current.lon);
+
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff5533';
+      ctx.shadowColor = '#ff5533';
+      ctx.shadowBlur  = 10;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // 4. Pulse ring — animated via pulsePhase
+      const ringRadius  = 6 + pulsePhase * 14;
+      const ringOpacity = (1 - pulsePhase) * 0.7;
+      ctx.beginPath();
+      ctx.arc(x, y, ringRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255, 85, 51, ${ringOpacity})`;
+      ctx.lineWidth   = 2;
+      ctx.stroke();
+    }
+
+    // --- Animation loop ---
+    // Advances pulsePhase and redraws every frame so the ring pulses smoothly.
+    let positions = []; // shared state, populated by the fetch loop (T7)
+
+    function animate(ts) {
+      pulsePhase = (pulsePhase + 0.012) % 1;
+      drawMap(positions);
+      requestAnimationFrame(animate);
+    }
+
+    // --- Status badge helper ---
+    const badge = document.getElementById('status-badge');
+
+    function setStatus(state) {
+      badge.className = state;
+      badge.textContent = state === 'live' ? 'Live'
+                        : state === 'error' ? 'Error — retrying'
+                        : 'Fetching\u2026';
+    }
+
+    // --- ISS data fetch ---
+    // CORS note: the Open Notify API is HTTP-only. This works when the page is
+    // opened from disk (file://) or served over plain HTTP. If served over HTTPS,
+    // the browser will block the mixed-content request. In that case, prefix the
+    // URL with a CORS proxy, e.g.:
+    //   'https://corsproxy.io/?' + ISS_API_URL
+    const ISS_API_URL = 'http://api.open-notify.org/iss-now.json';
+
+    async function fetchISS() {
+      setStatus('fetching');
+      const response = await fetch(ISS_API_URL);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      const lat  = parseFloat(data.iss_position.latitude);
+      const lon  = parseFloat(data.iss_position.longitude);
+      const ts   = data.timestamp;
+      setStatus('live');
+      return { lat, lon, ts };
+    }
+
+    // --- Info panel update ---
+    const elLat = document.getElementById('lat');
+    const elLon = document.getElementById('lon');
+    const elUtc = document.getElementById('utc');
+
+    function updatePanel(lat, lon, ts) {
+      const latStr = Math.abs(lat).toFixed(4) + '° ' + (lat >= 0 ? 'N' : 'S');
+      const lonStr = Math.abs(lon).toFixed(4) + '° ' + (lon >= 0 ? 'E' : 'W');
+      const utcStr = new Date(ts * 1000).toUTCString().replace('GMT', 'UTC');
+      elLat.textContent = latStr;
+      elLon.textContent = lonStr;
+      elUtc.textContent = utcStr;
+    }
+
+    // --- Tick: fetch + error handling ---
+    // Wraps fetchISS() so errors never propagate to the interval loop.
+    // On success: pushes the new position onto the shared array.
+    // On failure: sets the error badge and keeps the last known position on the map.
+    async function tick() {
+      try {
+        const { lat, lon, ts } = await fetchISS();
+        const MAX_TRAIL = 90;
+        positions.push({ lat, lon, ts });
+        if (positions.length > MAX_TRAIL) positions.shift();
+        updatePanel(lat, lon, ts);
+      } catch (err) {
+        console.error('ISS fetch failed:', err);
+        setStatus('error');
+      }
+    }
+
+    // --- Responsive resize ---
+    window.addEventListener('resize', () => {
+      canvas.width  = window.innerWidth;
+      canvas.height = window.innerHeight;
+      drawMap(positions);
+    });
+
+    // Start once the map image is ready
+    mapReady
+      .then(() => {
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+        // First fetch immediately, then every 5 seconds
+        tick();
+        setInterval(tick, 5000);
+        requestAnimationFrame(animate);
+      })
+      .catch(err => console.error(err));
+  </script>
+</body>
+</html>
